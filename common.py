@@ -29,3 +29,5 @@ def log(role: str, direction: str, detail: str):
     # direction: RX or TX
     print(f"[{now_ts()}] [{role} {direction}] {detail}")
     sys.stdout.flush()
+
+    #testing
