@@ -37,3 +37,30 @@ def get_local_ip() -> str:
     finally:
         s.close()
     return ip
+
+def is_power_of_two(n: int) -> bool:
+    return n > 0 and (n & (n - 1)) == 0
+
+def striping_valid(x: int) -> bool:
+    return 128 <= x <= 1048576 and is_power_of_two(x)
+
+def parse_kv(parts) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for p in parts:
+        if '=' in p:
+            k, v = p.split('=', 1)
+            out[k] = v
+    return out
+
+def build_ok(**kv) -> str:
+    if kv:
+        data = ",".join(f"{k}={v}" for k, v in kv.items())
+        return f"OK data={data}"
+    return "OK"
+
+def build_fail(reason: str) -> str:
+    return f"FAIL reason={reason.replace(' ', '_')}"
+
+def new_msg_id() -> str:
+    return uuid.uuid4().hex[:12]
+
