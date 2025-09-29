@@ -27,6 +27,24 @@ def main():
 
     mgr = (args.manager_ip, args.manager_m_port)
 
+    print("Commands: register-user | configure-dss <name> <n> <su> | deregister-user | quit")
+    while True:
+        try:
+            line = input(f"[{args.user_name}] enter command> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print(); line = "quit"
+        if not line:
+            continue
+
+        if line == "quit":
+            break
+
+        if line == "register-user":
+            msg = f"REGISTER-USER user={args.user_name} ip={ip} m={args.m_port} c={args.c_port}"
+            m_sock.send_line(msg, mgr)
+            log(f"{ROLE} {args.user_name}", "TX", f"to={mgr} {msg}")
+            continue
+
 
 if __name__ == "__main__":
     main()
