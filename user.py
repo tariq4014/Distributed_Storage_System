@@ -45,6 +45,24 @@ def main():
             log(f"{ROLE} {args.user_name}", "TX", f"to={mgr} {msg}")
             continue
 
+        if line == "configure-dss":
+            parts = line.split()
+            if len(parts) != 4:
+                print("usage: configure-dss <dss-name> <n> <su>")
+                continue
+            dss, n, su = parts[1], parts[2], parts[3]
+            msg = f"CONFIGURE-DSS user={args.user_name} dss={dss} n={n} su={su}"
+            m_sock.send_line(msg, mgr)
+            log(f"{ROLE} {args.user_name}", "TX", f"to={mgr} {msg}")
+            continue
+
+        if line == "deregister-user":
+            msg = f"DEREGISTER-USER user={args.user_name}"
+            m_sock.send_line(msg, mgr)
+            log(f"{ROLE} {args.user_name}", "TX", f"to={mgr} {msg}")
+            continue
+
+        print("unknown command")
 
 if __name__ == "__main__":
     main()
