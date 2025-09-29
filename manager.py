@@ -1,6 +1,6 @@
-import argparse, random, threading
-from typing import Dict, Any
-from common import JsonSocket, log, striping_valid
+import argparse, threading, random
+from typing import Dict, Any, Tuple
+from common import TextSocket, log, striping_valid, parse_kv, build_ok, build_fail
 
 users: Dict[str, Dict[str, Any]] = {}
 disks: Dict[str, Dict[str, Any]] = {}
@@ -8,119 +8,97 @@ dsses: Dict[str, Dict[str, Any]] = {}
 
 MANAGER_ROLE = "MANAGER"
 
+def handle_line(tsock: TextSocket, line: str, peer: Tuple[str, int]):
+    if not line:
+        return
+    parts = line.split()
+    cmd = parts[0].upper() 
+    kv = parse_kv(parts[1:])     
+    log(MANAGER_ROLE, "RX", f"from={peer} cmd={cmd} kv={kv}")
 
-def handle_message(jsock: JsonSocket, msg: Dict[str, Any], peer):
-    mtype = msg.get("type")
-    src = msg.get("from", {})
-    payload = msg.get("payload", {})
-    msg_id = msg.get("msg_id")
+    def reply(text: str):
+        tsock.send_line(text, peer)
+        log(MANAGER_ROLE, "TX", f"to={peer} {text}")
 
-    log(MANAGER_ROLE, "RX", f"from={src} type={mtype} payload={payload}")
-
-    def reply(status: str, reason: str = "", data: Dict[str, Any] = None):
-        resp = {
-            "in_reply_to": msg_id,
-            "status": status,
-            "reason": reason,
-            "data": data or {},
-        }
-        jsock.send_json(resp, peer)
-        log(MANAGER_ROLE, "TX", f"to={peer} status={status} reason={reason} data={resp['data']}")
-
-    if not mtype:
-        return reply("FAILURE", "missing type")
-
-    if mtype == "register-user":
-        name = payload.get("user_name") or src.get("name")
+    if cmd == "REGISTER-USER":
+        name = kv.get("user")
         if not name:
-            return reply("FAILURE", "missing user_name")
+            return reply(build_fail("missing_user"))
         if name in users:
-            return reply("FAILURE", "user already registered")
-        users[name] = {
-            "ip": src.get("ip"),
-            "m_port": src.get("m_port"),
-            "c_port": src.get("c_port"),
-        }
-        return reply("SUCCESS", data={"user_name": name})
+            return reply(build_fail("user_exists"))
+        users[name] = {"ip": kv.get("ip"), "m": int(kv.get("m", 0)), "c": int(kv.get("c", 0))}
+        return reply(build_ok(user=name))
 
-    if mtype == "register-disk":
-        dname = payload.get("disk_name") or src.get("name")
-        if not dname:
-            return reply("FAILURE", "missing disk_name")
-        if dname in disks:
-            return reply("FAILURE", "disk already registered")
-        disks[dname] = {
-            "ip": src.get("ip"),
-            "m_port": src.get("m_port"),
-            "c_port": src.get("c_port"),
-            "state": "Free",
-            "dss_name": None,
-        }
-        return reply("SUCCESS", data={"disk_name": dname})
+    if cmd == "REGISTER-DISK":
+        d = kv.get("disk")
+        if not d:
+            return reply(build_fail("missing_disk"))
+        if d in disks:
+            return reply(build_fail("disk_exists"))
+        disks[d] = {"ip": kv.get("ip"), "m": int(kv.get("m", 0)), "c": int(kv.get("c", 0)), "state": "Free", "dss": None}
+        return reply(build_ok(disk=d))
 
-    if mtype == "configure-dss":
-        dss_name = payload.get("dss_name")
-        n = int(payload.get("n", 0))
-        su = int(payload.get("striping_unit", 0))
-        if not dss_name:
-            return reply("FAILURE", "missing dss_name")
-        if dss_name in dsses:
-            return reply("FAILURE", "dss_name already exists")
+    if cmd == "CONFIGURE-DSS":
+        dss = kv.get("dss")
+        try:
+            n = int(kv.get("n", "0"))
+            su = int(kv.get("su", "0"))
+        except ValueError:
+            return reply(build_fail("bad_n_or_su"))
+        if not dss:
+            return reply(build_fail("missing_dss"))
+        if dss in dsses:
+            return reply(build_fail("dss_exists"))
         if n < 3:
-            return reply("FAILURE", "n must be >= 3")
+            return reply(build_fail("n_lt_3"))
         if not striping_valid(su):
-            return reply("FAILURE", "striping_unit must be power of two in [128, 1048576]")
-        free_disks = [d for d, meta in disks.items() if meta["state"] == "Free"]
-        if len(free_disks) < n:
-            return reply("FAILURE", "insufficient Free disks")
-        chosen = random.sample(free_disks, n)
-
-        chosen.sort()
+            return reply(build_fail("invalid_striping_unit"))
+        free = [d for d, meta in disks.items() if meta["state"] == "Free"]
+        if len(free) < n:
+            return reply(build_fail("insufficient_Free_disks"))
+        chosen = sorted(random.sample(free, n))
         for d in chosen:
             disks[d]["state"] = "InDSS"
-            disks[d]["dss_name"] = dss_name
-        dsses[dss_name] = {
-            "n": n,
-            "striping_unit": su,
-            "disks_ordered": chosen,
-        }
-        return reply("SUCCESS", data={"dss_name": dss_name, "n": n, "striping_unit": su, "disks": chosen})
+            disks[d]["dss"] = dss
+        dsses[dss] = {"n": n, "su": su, "disks": chosen}
+        return reply(build_ok(dss=dss, n=n, su=su, disks="[" + ",".join(chosen) + "]"))
 
-    if mtype == "deregister-user":
-        name = payload.get("user_name") or src.get("name")
+    if cmd == "DEREGISTER-USER":
+        name = kv.get("user")
         if name not in users:
-            return reply("FAILURE", "user not found")
+            return reply(build_fail("user_not_found"))
         del users[name]
-        return reply("SUCCESS", data={"user_name": name})
+        return reply(build_ok(user=name))
 
-    if mtype == "deregister-disk":
-        dname = payload.get("disk_name") or src.get("name")
-        meta = disks.get(dname)
+    if cmd == "DEREGISTER-DISK":
+        d = kv.get("disk")
+        meta = disks.get(d)
         if not meta:
-            return reply("FAILURE", "disk not found")
+            return reply(build_fail("disk_not_found"))
         if meta["state"] != "Free":
-            return reply("FAILURE", "disk in DSS; cannot deregister")
-        del disks[dname]
-        return reply("SUCCESS", data={"disk_name": dname})
+            return reply(build_fail("disk_in_DSS"))
+        del disks[d]
+        return reply(build_ok(disk=d))
 
-    return reply("FAILURE", f"unknown type: {mtype}")
+    return reply(build_fail("unknown_command"))
 
-
-def listener(jsock: JsonSocket):
+def listener(tsock: TextSocket):
     while True:
-        msg, peer = jsock.recv_json()
-        handle_message(jsock, msg, peer)
-
+        try:
+            line, peer = tsock.recv_line()
+            handle_line(tsock, line, peer)
+        except Exception as e:
+            log(MANAGER_ROLE, "ERROR", f"listener error: {e!r}")
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("m_port", type=int)
     args = ap.parse_args()
 
-    jsock = JsonSocket("0.0.0.0", args.m_port, "manager-m")
+    tsock = TextSocket("0.0.0.0", args.m_port, "manager-m")
     log(MANAGER_ROLE, "INFO", f"listening on 0.0.0.0:{args.m_port}")
 
-    t = threading.Thread(target=listener, args=(jsock,), daemon=True)
+    t = threading.Thread(target=listener, args=(tsock,), daemon=True)
     t.start()
 
     try:

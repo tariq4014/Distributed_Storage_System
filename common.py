@@ -1,9 +1,9 @@
-import json, socket, threading, time, uuid, sys
-from typing import Tuple, Any
+import socket, time, sys, uuid
+from typing import Tuple, Dict
 
 BUF = 65535
 
-class JsonSocket:
+class TextSocket:
     def __init__(self, bind_ip: str, bind_port: int, name: str):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -12,22 +12,28 @@ class JsonSocket:
         self.bind_ip = bind_ip
         self.bind_port = bind_port
 
-    def send_json(self, obj: Any, addr: Tuple[str, int]):
-        data = json.dumps(obj, separators=(",", ":")).encode("utf-8")
-        self.sock.sendto(data, addr)
+    def send_line(self, line: str, addr: Tuple[str, int]):
+        self.sock.sendto(line.encode("utf-8"), addr)
 
-    def recv_json(self) -> Tuple[Any, Tuple[str, int]]:
+    def recv_line(self) -> Tuple[str, Tuple[str, int]]:
         data, addr = self.sock.recvfrom(BUF)
-        return json.loads(data.decode("utf-8")), addr
+        return data.decode("utf-8").strip(), addr
 
 
 def now_ts() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()) + f".{int((time.time()%1)*1000):03d}"
 
-
 def log(role: str, direction: str, detail: str):
-    # direction: RX or TX
     print(f"[{now_ts()}] [{role} {direction}] {detail}")
     sys.stdout.flush()
 
-    #testing
+def get_local_ip() -> str:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
