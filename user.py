@@ -36,7 +36,7 @@ def main():
         if not line:
             continue
         parts = line.split()
-        cmd = parts[0].lower()
+        line = parts[0].lower()
 
         if line == "quit":
             break
