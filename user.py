@@ -35,6 +35,8 @@ def main():
             print(); line = "quit"
         if not line:
             continue
+        parts = line.split()
+        cmd = parts[0].lower()
 
         if line == "quit":
             break
