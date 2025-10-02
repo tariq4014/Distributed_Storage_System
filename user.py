@@ -36,18 +36,18 @@ def main():
         if not line:
             continue
         parts = line.split()
-        line = parts[0].lower()
+        cmd = parts[0].lower()
 
-        if line == "quit":
+        if cmd == "quit":
             break
 
-        if line == "register-user":
+        if cmd == "register-user":
             msg = f"REGISTER-USER user={args.user_name} ip={ip} m={args.m_port} c={args.c_port}"
             m_sock.send_line(msg, mgr)
             log(f"{ROLE} {args.user_name}", "TX", f"to={mgr} {msg}")
             continue
 
-        if line == "configure-dss":
+        if cmd == "configure-dss":
             parts = line.split()
             if len(parts) != 4:
                 print("usage: configure-dss <dss-name> <n> <su>")
@@ -58,7 +58,7 @@ def main():
             log(f"{ROLE} {args.user_name}", "TX", f"to={mgr} {msg}")
             continue
 
-        if line == "deregister-user":
+        if cmd == "deregister-user":
             msg = f"DEREGISTER-USER user={args.user_name}"
             m_sock.send_line(msg, mgr)
             log(f"{ROLE} {args.user_name}", "TX", f"to={mgr} {msg}")
