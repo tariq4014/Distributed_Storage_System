@@ -67,6 +67,7 @@ def main():
 
     print("Commands:")
     print("  register-user")
+    print("  configure-dss <name> <n> <su>")
     print("  ls")
     print("  copy <path> <owner>")
     print("  read <dss> <file> <out_path>")
@@ -91,6 +92,14 @@ def main():
             status, kv, raw = ask_mgr(m_sock, mgr, msg)
             if status != "OK": print(raw)
             continue
+        if cmd == "configure-dss":
+            if len(parts) != 4:
+                print("usage: configure-dss <name> <n> <su>"); continue
+            dss, n, su = parts[1], parts[2], parts[3]
+            status, kv, raw = ask_mgr(m_sock, mgr, f"CONFIGURE-DSS dss={dss} n={n} su={su}")
+            print(raw)
+            continue
+
 
         if cmd == "ls":
             status, kv, raw = ask_mgr(m_sock, mgr, "LS")
