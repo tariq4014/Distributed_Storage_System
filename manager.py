@@ -1,43 +1,74 @@
+# manager.py
+#!/usr/bin/env python3
 import argparse, threading, random
-from typing import Dict, Any, Tuple
-from common import TextSocket, log, striping_valid, parse_kv, build_ok, build_fail
+from typing import Dict, Any, Tuple, List
+from common import TextSocket, log, striping_valid, parse_kv, build_ok, build_fail, new_msg_id, encode_layout
 
-users: Dict[str, Dict[str, Any]] = {}
-disks: Dict[str, Dict[str, Any]] = {}
-dsses: Dict[str, Dict[str, Any]] = {}
+# State
+users: Dict[str, Dict[str, Any]] = {}           # user -> {ip,m,c}
+disks: Dict[str, Dict[str, Any]] = {}           # disk -> {ip,m,c,state,dss}
+dsses: Dict[str, Dict[str, Any]] = {}           # dss -> {n,su,disks:[names]}
+disk_addrs: Dict[str, Tuple[str,int]] = {}      # disk -> (ip, c_port)
+files: Dict[str, Dict[str, Dict[str, Any]]] = {}# files[dss][file] -> {size,owner,stripes:int}
+
+# Critical sections / in-progress (read/failure/copy)
+in_progress: Dict[str, Dict[str, Any]] = {}     # op_id -> {type,dss,user}
 
 MANAGER_ROLE = "MANAGER"
+
+def list_summary() -> str:
+    lines: List[str] = []
+    for dss, info in dsses.items():
+        arr = ",".join(info["disks"])
+        lines.append(f"{dss}: n={info['n']} ({arr}) su={info['su']}")
+        for fname, meta in files.get(dss, {}).items():
+            lines.append(f"  {fname} size={meta['size']} owner={meta['owner']}")
+    return "\\n".join(lines) if lines else "(empty)"
 
 def handle_line(tsock: TextSocket, line: str, peer: Tuple[str, int]):
     if not line:
         return
     parts = line.split()
-    cmd = parts[0].upper() 
-    kv = parse_kv(parts[1:])     
+    cmd = parts[0].upper()
+    kv = parse_kv(parts[1:])
     log(MANAGER_ROLE, "RX", f"from={peer} cmd={cmd} kv={kv}")
 
     def reply(text: str):
         tsock.send_line(text, peer)
         log(MANAGER_ROLE, "TX", f"to={peer} {text}")
 
+    # ---------- registrations ----------
     if cmd == "REGISTER-USER":
         name = kv.get("user")
-        if not name:
-            return reply(build_fail("missing_user"))
-        if name in users:
-            return reply(build_fail("user_exists"))
+        if not name: return reply(build_fail("missing_user"))
+        if name in users: return reply(build_fail("user_exists"))
         users[name] = {"ip": kv.get("ip"), "m": int(kv.get("m", 0)), "c": int(kv.get("c", 0))}
         return reply(build_ok(user=name))
 
     if cmd == "REGISTER-DISK":
         d = kv.get("disk")
-        if not d:
-            return reply(build_fail("missing_disk"))
-        if d in disks:
-            return reply(build_fail("disk_exists"))
-        disks[d] = {"ip": kv.get("ip"), "m": int(kv.get("m", 0)), "c": int(kv.get("c", 0)), "state": "Free", "dss": None}
+        if not d: return reply(build_fail("missing_disk"))
+        if d in disks: return reply(build_fail("disk_exists"))
+        ip = kv.get("ip"); m = int(kv.get("m", 0)); c = int(kv.get("c", 0))
+        disks[d] = {"ip": ip, "m": m, "c": c, "state": "Free", "dss": None}
+        disk_addrs[d] = (ip, c)
         return reply(build_ok(disk=d))
 
+    if cmd == "DEREGISTER-USER":
+        name = kv.get("user")
+        if name not in users: return reply(build_fail("user_not_found"))
+        del users[name]
+        return reply(build_ok(user=name))
+
+    if cmd == "DEREGISTER-DISK":
+        d = kv.get("disk")
+        meta = disks.get(d)
+        if not meta: return reply(build_fail("disk_not_found"))
+        if meta["state"] != "Free": return reply(build_fail("disk_in_DSS"))
+        del disks[d]; disk_addrs.pop(d, None)
+        return reply(build_ok(disk=d))
+
+    # ---------- DSS config ----------
     if cmd == "CONFIGURE-DSS":
         dss = kv.get("dss")
         try:
@@ -45,17 +76,12 @@ def handle_line(tsock: TextSocket, line: str, peer: Tuple[str, int]):
             su = int(kv.get("su", "0"))
         except ValueError:
             return reply(build_fail("bad_n_or_su"))
-        if not dss:
-            return reply(build_fail("missing_dss"))
-        if dss in dsses:
-            return reply(build_fail("dss_exists"))
-        if n < 3:
-            return reply(build_fail("n_lt_3"))
-        if not striping_valid(su):
-            return reply(build_fail("invalid_striping_unit"))
+        if not dss: return reply(build_fail("missing_dss"))
+        if dss in dsses: return reply(build_fail("dss_exists"))
+        if n < 3: return reply(build_fail("n_lt_3"))
+        if not striping_valid(su): return reply(build_fail("invalid_striping_unit"))
         free = [d for d, meta in disks.items() if meta["state"] == "Free"]
-        if len(free) < n:
-            return reply(build_fail("insufficient_Free_disks"))
+        if len(free) < n: return reply(build_fail("insufficient_Free_disks"))
         chosen = sorted(random.sample(free, n))
         for d in chosen:
             disks[d]["state"] = "InDSS"
@@ -63,23 +89,79 @@ def handle_line(tsock: TextSocket, line: str, peer: Tuple[str, int]):
         dsses[dss] = {"n": n, "su": su, "disks": chosen}
         return reply(build_ok(dss=dss, n=n, su=su, disks="[" + ",".join(chosen) + "]"))
 
-    if cmd == "DEREGISTER-USER":
-        name = kv.get("user")
-        if name not in users:
-            return reply(build_fail("user_not_found"))
-        del users[name]
-        return reply(build_ok(user=name))
+    # ---------- LS ----------
+    if cmd == "LS":
+        return reply(build_ok(list=list_summary()))
 
-    if cmd == "DEREGISTER-DISK":
-        d = kv.get("disk")
-        meta = disks.get(d)
-        if not meta:
-            return reply(build_fail("disk_not_found"))
-        if meta["state"] != "Free":
-            return reply(build_fail("disk_in_DSS"))
-        del disks[d]
-        return reply(build_ok(disk=d))
+    # ---------- COPY (phase 1) ----------
+    if cmd == "COPY":
+        # choose the user's (first) DSS arbitrarily (simplest demo)
+        if not dsses:
+            return reply(build_fail("no_dss"))
+        dss = next(iter(dsses))
+        info = dsses[dss]
+        triples = [(dn, *disk_addrs[dn]) for dn in info["disks"]]
+        op = new_msg_id()
+        in_progress[op] = {"type": "copy", "dss": dss, "user": kv.get("owner")}
+        return reply(build_ok(op=op, dss=dss, n=info["n"], su=info["su"], layout=encode_layout(triples)))
 
+    if cmd == "COPY-COMPLETE":
+        dss = kv["dss"]; fname = kv["file"]; owner = kv["owner"]
+        size = int(kv.get("size", "0")); stripes = int(kv.get("stripes", "0"))
+        files.setdefault(dss, {})[fname] = {"size": size, "owner": owner, "stripes": stripes}
+        # clear any in_progress of this type (best effort)
+        for k, v in list(in_progress.items()):
+            if v["type"] == "copy" and v["dss"] == dss: del in_progress[k]
+        return reply(build_ok(result="copy_recorded"))
+
+    # ---------- READ (phase 1/complete) ----------
+    if cmd == "READ":
+        dss = kv.get("dss"); fname = kv.get("file")
+        if dss not in dsses: return reply(build_fail("no_such_dss"))
+        if fname not in files.get(dss, {}): return reply(build_fail("no_such_file"))
+        info = dsses[dss]
+        triples = [(dn, *disk_addrs[dn]) for dn in info["disks"]]
+        op = new_msg_id()
+        in_progress[op] = {"type": "read", "dss": dss, "user": kv.get("owner")}
+        return reply(build_ok(op=op, dss=dss, n=info["n"], su=info["su"], stripes=files[dss][fname]["stripes"], layout=encode_layout(triples)))
+
+    if cmd == "READ-COMPLETE":
+        dss = kv["dss"]; fname = kv["file"]
+        # clear any read op for this dss (best effort)
+        for k, v in list(in_progress.items()):
+            if v["type"] == "read" and v["dss"] == dss: del in_progress[k]
+        return reply(build_ok(result="read_done"))
+
+    # ---------- DISK-FAILURE (simulate + recover) ----------
+    if cmd == "DISK-FAILURE":
+        dss = kv.get("dss")
+        if dss not in dsses: return reply(build_fail("no_such_dss"))
+        info = dsses[dss]
+        triples = [(dn, *disk_addrs[dn]) for dn in info["disks"]]
+        op = new_msg_id()
+        in_progress[op] = {"type": "failure", "dss": dss}
+        return reply(build_ok(op=op, dss=dss, n=info["n"], su=info["su"], layout=encode_layout(triples)))
+
+    if cmd == "RECOVERY-COMPLETE":
+        dss = kv.get("dss")
+        for k, v in list(in_progress.items()):
+            if v["type"] == "failure" and v["dss"] == dss:
+                del in_progress[k]
+        return reply(build_ok(result="recovered"))
+
+    # ---------- DECOMMISSION-DSS ----------
+    if cmd == "DECOMMISSION-DSS":
+        dss = kv.get("dss")
+        if dss not in dsses: return reply(build_fail("no_such_dss"))
+        # mark disks free & forget files (we let users send DELETE-FILE to disks in their script; manager keeps it simple)
+        for dn in dsses[dss]["disks"]:
+            disks[dn]["state"] = "Free"
+            disks[dn]["dss"] = None
+        files.pop(dss, None)
+        dsses.pop(dss, None)
+        return reply(build_ok(result="dss_decommissioned"))
+
+    # Fallback
     return reply(build_fail("unknown_command"))
 
 def listener(tsock: TextSocket):
@@ -97,7 +179,6 @@ def main():
 
     tsock = TextSocket("0.0.0.0", args.m_port, "manager-m")
     log(MANAGER_ROLE, "INFO", f"listening on 0.0.0.0:{args.m_port}")
-
     t = threading.Thread(target=listener, args=(tsock,), daemon=True)
     t.start()
 
@@ -105,7 +186,7 @@ def main():
         while True:
             threading.Event().wait(1)
     except KeyboardInterrupt:
-        log(MANAGER_ROLE, "INFO", "shutting down")
+        log(MANAGER_ROLE, "INFO", "shutting_down")
 
 if __name__ == "__main__":
     main()
