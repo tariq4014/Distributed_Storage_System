@@ -18,7 +18,8 @@ class TextSocket:
 
     def recv_line(self) -> Tuple[str, Tuple[str, int]]:
         data, addr = self.sock.recvfrom(BUF)
-        return data.decode("utf-8").strip(), addr
+        return data.decode("utf-8").rstrip("\r\n"), addr
+
 
 
 def now_ts() -> str:
