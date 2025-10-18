@@ -7,32 +7,45 @@ from common import TextSocket, log, get_local_ip, parse_kv, build_fail, chunk_by
 ROLE = "USER"
 
 def ask_mgr(m_sock: TextSocket, mgr: Tuple[str,int], msg: str) -> Tuple[str, Dict[str,str], str]:
-    """Send -> wait -> parse. Returns (status, kv, raw_line)."""
     m_sock.send_line(msg, mgr)
     log(ROLE, "TX", f"to={mgr} {msg}")
     while True:
         line, peer = m_sock.recv_line()
         log(ROLE, "RX", f"from={peer} {line}")
         parts = line.split()
-        if not parts: continue
-        if parts[0] in ("OK", "FAIL"):
-            status = parts[0]
-            kv = {}
-            if status == "OK":
-                kv = parse_kv([x for x in parts[1:] if x.startswith("data=")])
-                # flatten OK data=k=v,k=v ...
-                if "data" in kv:
-                    inner = kv["data"]
-                    # turn "k=v,k=v" into dict
-                    out = {}
-                    for p in inner.split(","):
-                        if "=" in p:
-                            k, v = p.split("=", 1)
-                            out[k] = v
-                    return status, out, line
-            else:
-                kv = parse_kv(parts[1:])
-                return status, kv, line
+        if not parts:
+            continue
+        status = parts[0]
+        if status not in ("OK", "FAIL"):
+            continue
+
+        if status == "FAIL":
+            # normal FAIL: parse key=val tokens
+            return "FAIL", parse_kv(parts[1:]), line
+
+        # status == "OK"
+        # Join everything after OK so commas in payload aren't lost
+        rest = " ".join(parts[1:])
+
+        # Expect "data=..."
+        if rest.startswith("data="):
+            data = rest[len("data="):]
+
+            # Special case: LS returns data=list=<big string with commas>
+            if data.startswith("list="):
+                return "OK", {"list": data[len("list="):]}, line
+
+            # Otherwise, comma-separated k=v pairs (COPY/READ/etc.)
+            out = {}
+            for p in data.split(","):
+                if "=" in p:
+                    k, v = p.split("=", 1)
+                    out[k] = v
+            return "OK", out, line
+
+        # OK without data
+        return "OK", {}, line
+
 
 def ask_disk(c_sock: TextSocket, addr: Tuple[str,int], msg: str) -> Tuple[str, Dict[str,str], str]:
     c_sock.send_line(msg, addr)
