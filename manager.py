@@ -85,6 +85,71 @@ def handle_line(tsock: TextSocket, line: str, peer: Tuple[str, int]):
         del disks[d]
         return reply(build_ok(disk=d))
 
+    if cmd == "LS":
+        return reply(build_ok(list=list_summary()))
+
+    if cmd == "COPY":
+        if not dsses:
+            return reply(build_fail("no_dss"))
+        dss = next(iter(dsses))
+        info = dsses[dss]
+        triples = [(dn, *disk_addrs[dn]) for dn in info["disks"]]
+        op = new_msg_id()
+        in_progress[op] = {"type": "copy", "dss": dss, "user": kv.get("owner")}
+        return reply(build_ok(op=op, dss=dss, n=info["n"], su=info["su"], layout=encode_layout(triples)))
+
+    if cmd == "COPY-COMPLETE":
+        dss = kv["dss"]; fname = kv["file"]; owner = kv["owner"]
+        size = int(kv.get("size", "0")); stripes = int(kv.get("stripes", "0"))
+        files.setdefault(dss, {})[fname] = {"size": size, "owner": owner, "stripes": stripes}
+        for k, v in list(in_progress.items()):
+            if v["type"] == "copy" and v["dss"] == dss:
+                del in_progress[k]
+        return reply(build_ok(result="copy_recorded"))
+
+    if cmd == "READ":
+        dss = kv.get("dss"); fname = kv.get("file")
+        if dss not in dsses: return reply(build_fail("no_such_dss"))
+        if fname not in files.get(dss, {}): return reply(build_fail("no_such_file"))
+        info = dsses[dss]
+        triples = [(dn, *disk_addrs[dn]) for dn in info["disks"]]
+        op = new_msg_id()
+        in_progress[op] = {"type": "read", "dss": dss, "user": kv.get("owner")}
+        return reply(build_ok(op=op, dss=dss, n=info["n"], su=info["su"], stripes=files[dss][fname]["stripes"], layout=encode_layout(triples)))
+
+    if cmd == "READ-COMPLETE":
+        dss = kv["dss"]; fname = kv["file"]
+        for k, v in list(in_progress.items()):
+            if v["type"] == "read" and v["dss"] == dss:
+                del in_progress[k]
+        return reply(build_ok(result="read_done"))
+
+    if cmd == "DISK-FAILURE":
+        dss = kv.get("dss")
+        if dss not in dsses: return reply(build_fail("no_such_dss"))
+        info = dsses[dss]
+        triples = [(dn, *disk_addrs[dn]) for dn in info["disks"]]
+        op = new_msg_id()
+        in_progress[op] = {"type": "failure", "dss": dss}
+        return reply(build_ok(op=op, dss=dss, n=info["n"], su=info["su"], layout=encode_layout(triples)))
+
+    if cmd == "RECOVERY-COMPLETE":
+        dss = kv.get("dss")
+        for k, v in list(in_progress.items()):
+            if v["type"] == "failure" and v["dss"] == dss:
+                del in_progress[k]
+        return reply(build_ok(result="recovered"))
+
+    if cmd == "DECOMMISSION-DSS":
+        dss = kv.get("dss")
+        if dss not in dsses: return reply(build_fail("no_such_dss"))
+        for dn in dsses[dss]["disks"]:
+            disks[dn]["state"] = "Free"
+            disks[dn]["dss"] = None
+        files.pop(dss, None)
+        dsses.pop(dss, None)
+        return reply(build_ok(result="dss_decommissioned"))
+
     return reply(build_fail("unknown_command"))
 
 def list_summary() -> str:
