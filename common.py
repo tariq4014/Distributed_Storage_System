@@ -1,5 +1,5 @@
 import socket, time, sys, uuid
-from typing import Tuple, Dict
+from typing import Tuple, Dict, List
 
 BUF = 65535
 
@@ -63,3 +63,22 @@ def build_fail(reason: str) -> str:
 def new_msg_id() -> str:
     return uuid.uuid4().hex[:12]
 
+def chunk_bytes(b: bytes, stripe: int) -> List[bytes]:
+    return [b[i:i+stripe] for i in range(0, len(b), stripe)]
+
+
+def encode_layout(triples: List[Tuple[str, str, int]]) -> str:
+    return "[" + ";".join(f"{d}@{ip}:{c}" for d, ip, c in triples) + "]"
+
+def decode_layout(s: str) -> List[Tuple[str, str, int]]:
+    s = s.strip()
+    if s.startswith("[") and s.endswith("]"):
+        s = s[1:-1]
+    if not s:
+        return []
+    out = []
+    for part in s.split(";"):
+        d, rest = part.split("@", 1)
+        ip, port = rest.split(":", 1)
+        out.append((d, ip, int(port)))
+    return out
