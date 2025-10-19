@@ -1,10 +1,13 @@
 import argparse, threading, random
-from typing import Dict, Any, Tuple
-from common import TextSocket, log, striping_valid, parse_kv, build_ok, build_fail
+from typing import Dict, Any, Tuple, List
+from common import TextSocket, log, striping_valid, parse_kv, build_ok, build_fail, new_msg_id, encode_layout
 
 users: Dict[str, Dict[str, Any]] = {}
 disks: Dict[str, Dict[str, Any]] = {}
 dsses: Dict[str, Dict[str, Any]] = {}
+disk_addrs: Dict[str, Tuple[str, int]] = {}      
+files: Dict[str, Dict[str, Dict[str, Any]]] = {}  
+in_progress: Dict[str, Dict[str, Any]] = {}       
 
 MANAGER_ROLE = "MANAGER"
 
@@ -35,7 +38,9 @@ def handle_line(tsock: TextSocket, line: str, peer: Tuple[str, int]):
             return reply(build_fail("missing_disk"))
         if d in disks:
             return reply(build_fail("disk_exists"))
-        disks[d] = {"ip": kv.get("ip"), "m": int(kv.get("m", 0)), "c": int(kv.get("c", 0)), "state": "Free", "dss": None}
+        ip = kv.get("ip"); m = int(kv.get("m", 0)); c = int(kv.get("c", 0))
+        disks[d] = {"ip": ip, "m": m, "c": c, "state": "Free", "dss": None}
+        disk_addrs[d] = (ip, c)
         return reply(build_ok(disk=d))
 
     if cmd == "CONFIGURE-DSS":
@@ -81,6 +86,15 @@ def handle_line(tsock: TextSocket, line: str, peer: Tuple[str, int]):
         return reply(build_ok(disk=d))
 
     return reply(build_fail("unknown_command"))
+
+def list_summary() -> str:
+    lines: List[str] = []
+    for dss, info in dsses.items():
+        arr = ",".join(info["disks"])
+        lines.append(f"{dss}: n={info['n']} ({arr}) su={info['su']}")
+        for fname, meta in files.get(dss, {}).items():
+            lines.append(f"  {fname} size={meta['size']} owner={meta['owner']}")
+    return "\\n".join(lines) if lines else "(empty)"
 
 def listener(tsock: TextSocket):
     while True:
