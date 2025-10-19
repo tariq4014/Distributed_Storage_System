@@ -1,5 +1,6 @@
 import argparse, threading
-from common import TextSocket, log, get_local_ip
+from typing import Dict, Tuple
+from common import TextSocket, log, get_local_ip, parse_kv, build_ok, build_fail
 
 ROLE = "DISK"
 
@@ -8,6 +9,7 @@ def listen(name: str, tsock: TextSocket):
         line, peer = tsock.recv_line()
         log(f"{ROLE} {name}", "RX", f"from={peer} {line}")
 
+#"hereee"
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("disk_name")
@@ -21,9 +23,62 @@ def main():
 
     m_sock = TextSocket("0.0.0.0", args.m_port, f"disk-{args.disk_name}-m")
     c_sock = TextSocket("0.0.0.0", args.c_port, f"disk-{args.disk_name}-c")
+    data_store: Dict[Tuple[str, int], bytes] = {}
+    failed = {"state": False}
 
-    threading.Thread(target=listen, args=(args.disk_name, m_sock), daemon=True).start()
-    threading.Thread(target=listen, args=(args.disk_name, c_sock), daemon=True).start()
+    def listen_m():
+        while True:
+            line, peer = m_sock.recv_line()
+            log(f"{ROLE} {args.disk_name}", "RX", f"from={peer} {line}")
+
+    def listen_c():
+        while True:
+            line, peer = c_sock.recv_line()
+            parts = line.split()
+            if not parts:
+                c_sock.send_line(build_fail("empty_cmd"), peer); continue
+            cmd = parts[0].upper()
+            kv = parse_kv(parts[1:])
+
+            if failed["state"] and cmd not in ("RECOVER-FROM-FAIL",):
+                c_sock.send_line(build_fail("disk_failed"), peer); continue
+
+            if cmd == "STORE-STRIPE":
+                if "\n" not in line:
+                    c_sock.send_line(build_fail("missing_payload"), peer); continue
+                header, payload = line.split("\n", 1)
+                file = kv["file"]; stripe = int(kv["stripe"])
+                data_store[(file, stripe)] = payload.encode("utf-8", "ignore")
+                c_sock.send_line(build_ok(), peer); continue
+
+            if cmd == "READ-STRIPE":
+                file = kv["file"]; stripe = int(kv["stripe"])
+                b = data_store.get((file, stripe))
+                if b is None:
+                    c_sock.send_line(build_fail("no_such_stripe"), peer)
+                else:
+                    c_sock.send_line(f"OK bytes={len(b)}\n"+b.decode("utf-8","ignore"), peer)
+                continue
+
+            if cmd == "DELETE-FILE":
+                file = kv["file"]
+                for k in [k for k in list(data_store.keys()) if k[0] == file]:
+                    del data_store[k]
+                c_sock.send_line(build_ok(), peer); continue
+
+            if cmd == "SIMULATE-FAIL":
+                failed["state"] = True
+                c_sock.send_line(build_ok(), peer); continue
+
+            if cmd == "RECOVER-FROM-FAIL":
+                failed["state"] = False
+                c_sock.send_line(build_ok(), peer); continue
+
+            c_sock.send_line(build_fail("unknown_command"), peer)
+
+    threading.Thread(target=listen_m, daemon=True).start()
+    threading.Thread(target=listen_c, daemon=True).start()
+
 
     mgr = (args.manager_ip, args.manager_m_port)
 
