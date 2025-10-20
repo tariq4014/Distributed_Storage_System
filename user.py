@@ -1,16 +1,10 @@
-import argparse, threading
+import argparse, os
 from typing import Tuple, Dict, Any, List
-from common import TextSocket, log, get_local_ip, parse_kv, chunk_bytes, decode_layout
+from common import TextSocket, log, get_local_ip, parse_kv, build_fail, chunk_bytes, decode_layout
 
 ROLE = "USER"
 
-def listen(name: str, tsock: TextSocket):
-    while True:
-        line, peer = tsock.recv_line()
-        log(f"{ROLE} {name}", "RX", f"from={peer} {line}")
-
 def ask_mgr(m_sock: TextSocket, mgr: Tuple[str,int], msg: str) -> Tuple[str, Dict[str,str], str]:
-    """Send -> wait -> parse OK/FAIL. Special-case LS payload."""
     m_sock.send_line(msg, mgr)
     log(ROLE, "TX", f"to={mgr} {msg}")
     while True:
@@ -26,14 +20,13 @@ def ask_mgr(m_sock: TextSocket, mgr: Tuple[str,int], msg: str) -> Tuple[str, Dic
         if status == "FAIL":
             return "FAIL", parse_kv(parts[1:]), line
 
-        # ok
         rest = " ".join(parts[1:])
         if rest.startswith("data="):
             data = rest[len("data="):]
-            if data.startswith("list="):            
+            if data.startswith("list="):
                 return "OK", {"list": data[len("list="):]}, line
             out = {}
-            for p in data.split(","):                  
+            for p in data.split(","):
                 if "=" in p:
                     k, v = p.split("=", 1)
                     out[k] = v
@@ -69,10 +62,6 @@ def main():
 
     m_sock = TextSocket("0.0.0.0", args.m_port, f"user-{args.user_name}-m")
     c_sock = TextSocket("0.0.0.0", args.c_port, f"user-{args.user_name}-c")
-
-    threading.Thread(target=listen, args=(args.user_name, m_sock), daemon=True).start()
-    threading.Thread(target=listen, args=(args.user_name, c_sock), daemon=True).start()
-
     mgr = (args.manager_ip, args.manager_m_port)
 
     print("Commands:")
@@ -91,42 +80,31 @@ def main():
             line = input(f"[{args.user_name}] enter command> ").strip()
         except (EOFError, KeyboardInterrupt):
             print(); line = "quit"
-        if not line:
-            continue
-        parts = line.split()
-        cmd = parts[0].lower()
+        if not line: continue
+        parts = line.split(); cmd = parts[0].lower()
 
         if cmd == "quit":
             break
 
         if cmd == "register-user":
             msg = f"REGISTER-USER user={args.user_name} ip={ip} m={args.m_port} c={args.c_port}"
-            m_sock.send_line(msg, mgr)
-            log(f"{ROLE} {args.user_name}", "TX", f"to={mgr} {msg}")
+            status, kv, raw = ask_mgr(m_sock, mgr, msg)
+            if status != "OK": print(raw)
             continue
-
         if cmd == "configure-dss":
-            parts = line.split()
             if len(parts) != 4:
-                print("usage: configure-dss <dss-name> <n> <su>")
-                continue
+                print("usage: configure-dss <name> <n> <su>"); continue
             dss, n, su = parts[1], parts[2], parts[3]
-            msg = f"CONFIGURE-DSS user={args.user_name} dss={dss} n={n} su={su}"
-            m_sock.send_line(msg, mgr)
-            log(f"{ROLE} {args.user_name}", "TX", f"to={mgr} {msg}")
+            status, kv, raw = ask_mgr(m_sock, mgr, f"CONFIGURE-DSS dss={dss} n={n} su={su}")
+            print(raw)
             continue
 
-        if cmd == "deregister-user":
-            msg = f"DEREGISTER-USER user={args.user_name}"
-            m_sock.send_line(msg, mgr)
-            log(f"{ROLE} {args.user_name}", "TX", f"to={mgr} {msg}")
-            continue
 
         if cmd == "ls":
             status, kv, raw = ask_mgr(m_sock, mgr, "LS")
             if status == "OK":
                 print("\n--- LS ---")
-                print(kv.get("list", "(none)").replace("\\n", "\n"))
+                print(kv.get("list","(none)").replace("\\n","\n"))
                 print("-----------\n")
             else:
                 print(raw)
@@ -135,7 +113,6 @@ def main():
         if cmd == "copy":
             if len(parts) != 3:
                 print("usage: copy <path> <owner>"); continue
-            import os
             path, owner = parts[1], parts[2]
             if not os.path.exists(path):
                 print("no such file"); continue
@@ -164,8 +141,8 @@ def main():
             status, kv, raw = ask_mgr(m_sock, mgr, f"READ file={fname} dss={dss} owner={args.user_name}")
             if status != "OK":
                 print(raw); continue
-            n = int(kv["n"]); layout = decode_layout(kv["layout"])
-            stripes = int(kv.get("stripes", "0")) or n
+            n = int(kv["n"]); su = int(kv["su"]); layout = decode_layout(kv["layout"])
+            stripes = int(kv.get("stripes","0")) or n 
             chunks: List[bytes] = []
             for i in range(stripes):
                 dn, ipd, cp = layout[i % n]
@@ -174,7 +151,7 @@ def main():
                     print("disk read error:", raw2); break
                 if "\n" in raw2:
                     _, payload = raw2.split("\n", 1)
-                    chunks.append(payload.encode("utf-8", "ignore"))
+                    chunks.append(payload.encode("utf-8","ignore"))
             open(outp, "wb").write(b"".join(chunks))
             ask_mgr(m_sock, mgr, f"READ-COMPLETE file={fname} dss={dss} owner={args.user_name}")
             print(f"read {fname} -> {outp}")
@@ -186,7 +163,7 @@ def main():
             dss = parts[1]
             status, kv, raw = ask_mgr(m_sock, mgr, f"DISK-FAILURE dss={dss}")
             if status != "OK": print(raw); continue
-            layout = decode_layout(kv["layout"])
+            layout = decode_layout(kv["layout"]); n = int(kv["n"])
             dn, ipd, cp = layout[0]
             ask_disk(c_sock, (ipd, cp), "SIMULATE-FAIL")
             ask_disk(c_sock, (ipd, cp), "RECOVER-FROM-FAIL")
@@ -199,6 +176,11 @@ def main():
                 print("usage: decommission-dss <dss>"); continue
             dss = parts[1]
             status, kv, raw = ask_mgr(m_sock, mgr, f"DECOMMISSION-DSS dss={dss}")
+            print(raw)
+            continue
+
+        if cmd == "deregister-user":
+            status, kv, raw = ask_mgr(m_sock, mgr, f"DEREGISTER-USER user={args.user_name}")
             print(raw)
             continue
 

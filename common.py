@@ -2,7 +2,7 @@ import socket, time, sys, uuid
 from typing import Tuple, Dict, List
 
 BUF = 65535
-
+#dd
 class TextSocket:
     def __init__(self, bind_ip: str, bind_port: int, name: str):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -66,11 +66,10 @@ def new_msg_id() -> str:
 def chunk_bytes(b: bytes, stripe: int) -> List[bytes]:
     return [b[i:i+stripe] for i in range(0, len(b), stripe)]
 
+def encode_layout(triples: List[Tuple[str,str,int]]) -> str:
+    return "[" + ";".join(f"{d}@{ip}:{c}" for d,ip,c in triples) + "]"
 
-def encode_layout(triples: List[Tuple[str, str, int]]) -> str:
-    return "[" + ";".join(f"{d}@{ip}:{c}" for d, ip, c in triples) + "]"
-
-def decode_layout(s: str) -> List[Tuple[str, str, int]]:
+def decode_layout(s: str) -> List[Tuple[str,str,int]]:
     s = s.strip()
     if s.startswith("[") and s.endswith("]"):
         s = s[1:-1]
