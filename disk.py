@@ -74,7 +74,8 @@ def main():
 
             c_sock.send_line(build_fail("unknown_command"), peer)
 
-    threading.Thread(target=listen_m, daemon=True).start()
+    #Two background listeners: 'm' (log only) and 'c' (data path, mutates in memory stripes)
+    threading.Thread(target=listen_m, daemon=True).start() 
     threading.Thread(target=listen_c, daemon=True).start()
 
     print("Commands: register-disk | deregister-disk | quit")

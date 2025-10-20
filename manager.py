@@ -163,7 +163,7 @@ def main():
 
     tsock = TextSocket("0.0.0.0", args.m_port, "manager-m")
     log(MANAGER_ROLE, "INFO", f"listening on 0.0.0.0:{args.m_port}")
-    t = threading.Thread(target=listener, args=(tsock,), daemon=True)
+    t = threading.Thread(target=listener, args=(tsock,), daemon=True) #Single background listener thread for all incoming manager messages (daemon so process can exit)
     t.start()
 
     try:
