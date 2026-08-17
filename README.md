@@ -43,8 +43,8 @@ Disk layouts are exchanged in a compact encoded form, `[disk@ip:port;disk@ip:por
 Clone the repository:
 
 ```
-git clone https://github.com/tariq4014/socketProject.git
-cd socketProject
+git clone https://github.com/tariq4014/Distributed_Storage_System.git
+cd Distributed_Storage_System
 ```
 
 Start the manager, then one process per disk, then the user. Each process needs its own ports.
